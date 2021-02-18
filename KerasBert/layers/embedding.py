@@ -5,14 +5,14 @@ import keras.backend.tensorflow_backend as K
 from .utils import LayerNormalization
 
 class TokenEmbedding(keras.layers.Layer):
-    def __init__(self, token_vocab_size, embedding_dim, name="token_embedding", **kwargs):
-        self.token_vocab_size = token_vocab_size
+    def __init__(self, vocab_size, embedding_dim, name="token_embedding", **kwargs):
+        self.vocab_size = vocab_size
         self.embedding_dim = embedding_dim
         super(TokenEmbedding, self).__init__(name=name, **kwargs)
             
     def build(self, input_shape):
         kernel_initializer = tf.initializers.truncated_normal(stddev=0.02)
-        self.token_embed_weights = self.add_weight(shape=(self.token_vocab_size, self.embedding_dim), name="token_embed_weights", initializers=kernel_initializer, dtype=tf.float32)
+        self.token_embed_weights = self.add_weight(shape=(self.vocab_size, self.embedding_dim), name="token_embed_weights", initializers=kernel_initializer, dtype=tf.float32)
         super(TokenEmbedding, self).build(input_shape)
         
     def call(self, inputs):
@@ -24,12 +24,12 @@ class TokenEmbedding(keras.layers.Layer):
         batch_size = input_shape[0]
         timesteps = input_shape[1]
         output_shape = (batch_size, timesteps, self.embedding_dim)
-        token_embedding_table_shape = (self.token_vocab_size, self.embedding_dim)
-        return [outptu_shape, token_embedding_table_shape]
+        token_embedding_table_shape = (self.vocab_size, self.embedding_dim)
+        return [output_shape, token_embedding_table_shape]
         
     def get_config(self):
         config = {
-            "token_vocab_size": self.token_vocab_size,
+            "vocab_size": self.vocab_size,
             "embedding_dim": self.embedding_dim
         }
         base_config = super(TokenEmbedding, self).get_config()
