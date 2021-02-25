@@ -9,6 +9,8 @@ class BertPreprocessor:
     over_length_row = None
     is_next_label = 1
     not_next_label = 0
+    sentence_delimiter = "\t"
+    turn_delimiter = "§"
 
     def __init__(self, timesteps, over_length_row="truncate", konlpy_mecab=True, config=PreprocessorConfig):
         '''
@@ -23,7 +25,7 @@ class BertPreprocessor:
         self.over_length_row = over_length_row
         self.preprocessor = Preprocessor(config=config, konlpy_mecab=konlpy_mecab)
 
-    def encode(self, sequences, mask, encode_pos, verbose=False):
+    def encode(self, sequences, mask, encode_turn, encode_pos, verbose=False):
         '''
         :param sequences: list of sequence which consists of sentences concatenated with "\n"
                             e.g.) "I ate an apple.\nbut, it was not juicy."
@@ -38,24 +40,28 @@ class BertPreprocessor:
 
         input_ids = []
         seq_ids = []
+        turn_ids = []
         pos_ids = []
 
         sequences_iter = sequences
         if verbose: sequences_iter = tqdm(sequences)
         for sequence in sequences_iter:
-            input_id, seq_id, pos_id = self.sequence_to_ids(sequence, mask=mask, encode_pos=encode_pos)
+            input_id, seq_id, turn_id, pos_id = self.sequence_to_ids(sequence, mask=mask, encode_turn=encode_turn, encode_pos=encode_pos)
             input_ids.append(input_id)
             seq_ids.append(seq_id)
+            if encode_turn: turn_ids.append(turn_id)
             if encode_pos: pos_ids.append(pos_id)
 
         input_ids = self.trim_row_length(input_ids, over_length_row=self.over_length_row, margin=3)
         seq_ids = self.trim_row_length(seq_ids, over_length_row=self.over_length_row, margin=3)
+        if encode_turn: turn_ids = self.trim_row_length(turn_ids, over_length_row=self.over_length_row, margin=3)
         if encode_pos: pos_ids = self.trim_row_length(pos_ids, over_length_row=self.over_length_row, margin=3)
 
         input_ids = np.array(input_ids)
         seq_ids = np.array(seq_ids)
+        pos_ids = np.array(turn_ids)
         pos_ids = np.array(pos_ids)
-        return input_ids, seq_ids, pos_ids
+        return input_ids, seq_ids, turn_ids, pos_ids
 
     def decode(self, ids):
         output = None
@@ -68,7 +74,7 @@ class BertPreprocessor:
             output = self.preprocessor.spm_model.DecodeIds(ids)
         return output
 
-    def sequence_to_ids(self, sequence, mask, encode_pos):
+    def sequence_to_ids(self, sequence, mask, encode_turn, encode_pos):
         '''
         :param sequence: sequence, list of sentences, e.g.) ["I ate an apple.", "but, It was not juicy."]
         :param mask: whether to mask or not, masking is only recommended when encoding train data
@@ -77,28 +83,51 @@ class BertPreprocessor:
         '''
         sequence_ids = []
         seq_ids = []
+        turn_ids = []
         pos_ids = []
 
         sentence_end_idx = 0
+        turn_idx = 0
         sequence_ids.append(self.preprocessor.config["cls_token_id"])
         pos_ids.append(self.preprocessor.pos_dict["cls_token"])
+        turn_ids.append(1)
         for sentence_idx, sentence in enumerate(sequence):
             sentence_idx += 1 # begin with 1
-
-            sentence_ids, sentence_pos_ids = self.preprocessor.sentence_to_ids(sentence, mask=mask, encode_pos=encode_pos)
+            
+            sentence_ids = []
+            sentence_turn_ids = []
+            sentence_pos_ids = []
+            if encode_turn:
+                for turn in sentence.split(self.turn_delimiter):
+                    turn_idx += 1
+                    _sentence_ids, _sentence_pos_ids = self.preprocessor.sentence_to_ids(sentence, mask=mask, encode_pos=encode_pos)
+                    _sentence_ids.append(self.preprocessor.config["turn_token_id"])
+                    _sentence_pos_ids.append(self.preprocessor.pos_dict["turn_token"])
+                    sentence_ids += _sentence_ids
+                    sentence_pos_ids += _sentence_pos_ids
+                    sentence_turn_ids += [turn_idx] * len(_sentence_ids)
+            else:
+                sentence_ids, sentence_pos_ids = self.preprocessor.sentence_to_ids(sentence, mask=mask, encode_pos=encode_pos)
+                
             sequence_ids += sentence_ids
             sequence_ids.append(self.preprocessor.config["sep_token_id"])
             sentence_seq_ids = [sentence_idx] * (len(sequence_ids) - sentence_end_idx)
             seq_ids += sentence_seq_ids
             sentence_end_idx = len(sequence_ids)
 
+            if encode_turn:
+                turn_ids += sentence_turn_ids
+                turn_ids.append(turn_idx)
+            
             if encode_pos:
                 pos_ids += sentence_pos_ids
                 pos_ids.append(self.preprocessor.pos_dict["sep_token"])
+                
+            print("token:", len(sequence_ids), "\tseq:", len(seq_ids), "\tturn:", len(turn_ids), "\tpos:", len(pos_ids))
 
-        return sequence_ids, seq_ids, pos_ids
+        return sequence_ids, seq_ids, turn_ids, pos_ids
 
-    def extract_sequence(self, path, documents, min_seq_len, append=False, shuffle=True, delimiter="\t", encoding="UTF-8"):
+    def extract_sequence(self, path, documents, min_seq_len, encode_turn, split_turn=False, append=False, shuffle=True, encoding="UTF-8"):
         '''
         extract sequences consist of sequential sentences and unrelated sentences from document.
         :param path: path to save output txt
@@ -106,9 +135,9 @@ class BertPreprocessor:
         :param min_seq_len: minimum tokens length of each sentence to use
         :param append: whether to allow appending to existing file if there is a file with given path
         :param shuffle: whether to shuffle extracted sequences
-        :param delimiter: delimeter to join sequence (two sentences)
         :return output: boolean
         '''
+        margin = 3
         positive_sequences = []
         negative_sequences = []
 
@@ -119,8 +148,8 @@ class BertPreprocessor:
                 next_sentence = document[sentence_idx+1]
                 positive_sequence = [cur_sentence, next_sentence]
                 if len(cur_sentence.split()) <= min_seq_len or len(next_sentence.split()) <= min_seq_len: continue
-                if not self.is_feasible_sequence(positive_sequence): continue
-                positive_sequence = delimiter.join(positive_sequence)
+                if not self.is_feasible_sequence(positive_sequence, margin=margin): continue
+                positive_sequence = self.sentence_delimiter.join(positive_sequence)
                 positive_sequences.append(positive_sequence)
 
                 # negative samples
@@ -131,9 +160,10 @@ class BertPreprocessor:
                     next_document_sentence = np.random.choice(next_document)
                     negative_sequence = [cur_sentence, next_document_sentence]
                     if len(cur_sentence.split()) <= min_seq_len or len(next_document_sentence.split()) <= min_seq_len: continue
-                    if not self.is_feasible_sequence(negative_sequence): continue
-                    negative_sequence = delimiter.join(negative_sequence)
+                    if not self.is_feasible_sequence(negative_sequence, margin=margin): continue
+                    negative_sequence = self.sentence_delimiter.join(negative_sequence)
                     negative_sequences.append(negative_sequence)
+                    break
 
         positive_nsp_ids = [self.is_next_label] * len(positive_sequences)
         negative_nsp_ids = [self.not_next_label] * len(negative_sequences)
@@ -141,7 +171,7 @@ class BertPreprocessor:
         total_nsp_ids = positive_nsp_ids + negative_nsp_ids
 
         if shuffle:
-            random_indice = np.arange(0, total_sequences)
+            random_indice = np.arange(0, len(total_sequences))
             np.random.shuffle(random_indice)
             total_sequences = np.array(total_sequences)
             total_sequences = total_sequences[random_indice]
@@ -153,9 +183,13 @@ class BertPreprocessor:
         if append: fp = open(path, "a", encoding=encoding)
         else: fp = open(path, "w", encoding=encoding)
 
-        row_template = "{sequence}{delimiter}{nsp_id}\n"
+        row_template = "{sentence_1}{delimiter}{sentence_2}{delimiter}{nsp_id}\n"
         for sequence, nsp_id in zip(total_sequences, total_nsp_ids):
-            row = row_template.format(sequence=sequence, delimiter=delimiter, nsp_id=str(nsp_id))
+            sentence_1, sentence_2 = sequence.split(self.sentence_delimiter)            
+            if encode_turn:
+                sentence_1 = self.turn_delimiter.join(self.split_sentence_to_turn(sentence_1))
+                sentence_2 = self.turn_delimiter.join(self.split_sentence_to_turn(sentence_2))
+            row = row_template.format(sentence_1=sentence_1, sentence_2=sentence_2, delimiter=self.sentence_delimiter, nsp_id=str(nsp_id))
             fp.write(row)
         fp.close()
 
@@ -232,4 +266,16 @@ class BertPreprocessor:
         for row in rows:
             row_onehot = self.preprocessor.onehot_row(row=row, num_class=num_class)
             output.append(row_onehot)
+        return output
+    
+    def split_sentence_to_turn(self, sentence, delimiter="(\. |\? |\! |\n)"):
+        output = []
+        splited = re.split(delimiter, sentence)
+        for i in range(0, len(splited), 2):
+            part = splited[i]
+            if (i+1) < len(splited):
+                part = part + splited[i+1]
+            part = part.strip()
+            if part=="": continue
+            output.append(part)
         return output
