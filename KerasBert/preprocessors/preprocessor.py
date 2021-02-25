@@ -124,15 +124,15 @@ class Preprocessor:
                 output.append((token, self.config["nltk_prefix"].format(tag=tag)))
         else:
             if self.is_advanced_mecab: sentence_token = self.mecab.pos(sentence, interjection_normalize=self.config["interjection_normalize"], arabia_normalize=self.config["arabia_normalize"], chinese_normalize=self.config["chinese_normalize"])
-            else: sentence_token = self.mecab_pos(sentence)
+            else: sentence_token = self.mecab.pos(sentence)
             output = []
             for token, tag in sentence_token:
                 tag = self._convert_mecab_tag_to_pos(tag)
                 if tag == "SL":
-                    _, tag = nltk.pos(tag([token]))[0]
-                    output.append(token, self.config["nltk_prefix"].format(tag=tag))
+                    _, tag = nltk.pos_tag([token])[0]
+                    output.append((token, self.config["nltk_prefix"].format(tag=tag)))
                 else:
-                    output.append(token, self.config["mecab_prefix"].format(tag=tag))
+                    output.append((token, self.config["mecab_prefix"].format(tag=tag)))
 
         return output
 
@@ -283,7 +283,7 @@ class Preprocessor:
         self._assert_spm_model_load(self.spm_model)
 
         tokens = []
-        pos_dict = self.self.config["special_token_dict"].copy()
+        pos_dict = self.config["special_token_dict"].copy()
         tokens_dict = dict()
         for sentence in tqdm(sentences):
             for token, tag in self.tokenizer(sentence):
@@ -304,7 +304,7 @@ class Preprocessor:
 
     def save_tokens_dict(self, path):
         with open(path, "wb") as fp:
-            pickle.dump([self.tokens, self.tokens_dict, self.pos_dict])
+            pickle.dump([self.tokens, self.tokens_dict, self.pos_dict], fp)
 
     def train_spm_model(self, sentences, vocab_size, spm_model_path=None, spm_model_type="bpe"):
         self.config["vocab_size"] = vocab_size
@@ -328,7 +328,7 @@ class Preprocessor:
         # load trained model
         spm_model_file = spm_model_path + self.spm_model_prefix + ".model"
         spm_vocab_file = spm_model_path + self.spm_model_prefix + ".vocab"
-        spm_model = spm.SentencePiecePreocessor()
+        spm_model = spm.SentencePieceProcessor()
         spm_model.Load(spm_model_file)
 
         spm_tokens = []
@@ -337,9 +337,9 @@ class Preprocessor:
                 token, idx = row.strip().split("\t")
                 spm_tokens.append(token)
 
-        self.vocab_size = self.spm_model.GetPieceSize()
         self.spm_model = spm_model
         self.spm_tokens = spm_tokens
+        self.vocab_size = self.spm_model.GetPieceSize()
         self.spm_model_path = spm_model_path
         self.spm_model_type = spm_model_type
 
@@ -358,7 +358,7 @@ class Preprocessor:
             token_append_template.format(token_type="unk", token_id=self.config["unk_token_id"], token=self.config["unk_token"])
 
         # e.g.) ' --user_defined_symbols=<cls>,<sep>,<turn>,<mask>,<num>'
-        uds_append_template = " --user_defined_symbols={user_defiend_symbols}"
+        uds_append_template = " --user_defined_symbols={user_defined_symbols}"
         user_defined_symbols = ",".join([self.config["cls_token"], self.config["sep_token"], self.config["turn_token"], self.config["mask_token"], self.config["num_token"]])
         uds_cmd = uds_append_template.format(user_defined_symbols=user_defined_symbols)
 
